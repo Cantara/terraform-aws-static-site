@@ -10,10 +10,11 @@ provider "aws" {
 data "aws_caller_identity" "current-account" {}
 
 resource "aws_acm_certificate" "cert_website" {
-  domain_name       = var.site_name
-  validation_method = "DNS"
-  provider          = aws.virginia
-  tags              = var.tags
+  domain_name               = var.site_name
+  subject_alternative_names = var.external_domain == "" ? [] : [var.external_domain]
+  validation_method         = "DNS"
+  provider                  = aws.virginia
+  tags                      = var.tags
 
   lifecycle {
     create_before_destroy = true
@@ -34,7 +35,7 @@ resource "aws_route53_record" "cert_website_validation" {
 
 resource "aws_acm_certificate_validation" "main" {
   certificate_arn         = aws_acm_certificate.cert_website.arn
-  validation_record_fqdns = [aws_route53_record.cert_website_validation.fqdn]
+  validation_record_fqdns = var.external_domain == "" ? [aws_route53_record.cert_website_validation.fqdn] : [aws_route53_record.cert_website_validation.fqdn, "${var.external_domain}."]
   provider                = aws.virginia
 }
 
@@ -83,7 +84,7 @@ resource "aws_cloudfront_distribution" "s3_distribution" {
   enabled             = true
   is_ipv6_enabled     = true
   default_root_object = "index.html"
-  aliases             = [aws_acm_certificate.cert_website.domain_name]
+  aliases             = var.external_domain == "" ? [aws_acm_certificate.cert_website.domain_name] : [aws_acm_certificate.cert_website.domain_name, var.external_domain]
 
   custom_error_response {
     error_code         = 404
