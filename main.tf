@@ -4,7 +4,7 @@
 provider "aws" {
   region  = "us-east-1"
   alias   = "virginia"
-  version = "~> 2.23"
+  version = "~> 2.46"
 }
 
 data "aws_caller_identity" "current-account" {}
@@ -18,6 +18,7 @@ resource "aws_acm_certificate" "cert_website" {
 
   lifecycle {
     create_before_destroy = true
+    ignore_changes        = [subject_alternative_names]
   }
 }
 
@@ -25,17 +26,35 @@ data "aws_route53_zone" "main" {
   name = var.hosted_zone_name
 }
 
+resource "aws_route53_zone" "external" {
+  count = var.external_domain == "" ? 0 : 1
+  name  = var.external_domain
+  tags  = var.tags
+}
+
+locals {
+  domains = var.external_domain == "" ? [var.site_name] : [var.site_name, var.external_domain]
+  validation_options_by_domain_name = {
+    for opt in aws_acm_certificate.cert_website.domain_validation_options : opt.domain_name => merge(opt, {
+      zone_id = opt.domain_name == var.site_name ? data.aws_route53_zone.main.id : aws_route53_zone.external.0.id
+    })
+  }
+}
+
 resource "aws_route53_record" "cert_website_validation" {
-  name    = aws_acm_certificate.cert_website.domain_validation_options.0.resource_record_name
-  type    = aws_acm_certificate.cert_website.domain_validation_options.0.resource_record_type
-  zone_id = data.aws_route53_zone.main.id
-  records = [aws_acm_certificate.cert_website.domain_validation_options.0.resource_record_value]
-  ttl     = 60
+  depends_on      = [aws_route53_zone.external, aws_acm_certificate.cert_website]
+  for_each        = toset(local.domains)
+  name            = local.validation_options_by_domain_name[each.key].resource_record_name
+  type            = local.validation_options_by_domain_name[each.key].resource_record_type
+  zone_id         = local.validation_options_by_domain_name[each.key].zone_id
+  records         = [local.validation_options_by_domain_name[each.key].resource_record_value]
+  ttl             = 60
+  allow_overwrite = true
 }
 
 resource "aws_acm_certificate_validation" "main" {
   certificate_arn         = aws_acm_certificate.cert_website.arn
-  validation_record_fqdns = var.external_domain == "" ? [aws_route53_record.cert_website_validation.fqdn] : [aws_route53_record.cert_website_validation.fqdn, "${var.external_domain}."]
+  validation_record_fqdns = values(aws_route53_record.cert_website_validation).*.fqdn
   provider                = aws.virginia
 }
 
@@ -84,7 +103,7 @@ resource "aws_cloudfront_distribution" "s3_distribution" {
   enabled             = true
   is_ipv6_enabled     = true
   default_root_object = "index.html"
-  aliases             = var.external_domain == "" ? [aws_acm_certificate.cert_website.domain_name] : [aws_acm_certificate.cert_website.domain_name, var.external_domain]
+  aliases             = local.domains
 
   custom_error_response {
     error_code         = 404
@@ -138,10 +157,11 @@ resource "aws_cloudfront_distribution" "s3_distribution" {
   }
 }
 
-resource "aws_route53_record" "wwww_a" {
-  name    = "${var.site_name}."
-  type    = "A"
-  zone_id = data.aws_route53_zone.main.id
+resource "aws_route53_record" "www_a" {
+  for_each = toset(local.domains)
+  name     = "${each.key}."
+  type     = "A"
+  zone_id  = local.validation_options_by_domain_name[each.key].zone_id
 
   alias {
     name                   = aws_cloudfront_distribution.s3_distribution.domain_name
