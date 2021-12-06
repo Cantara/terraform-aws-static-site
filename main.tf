@@ -45,6 +45,10 @@ resource "aws_acm_certificate_validation" "main" {
   certificate_arn         = aws_acm_certificate.cert_website.arn
   validation_record_fqdns = [for record in aws_route53_record.cert_website_validation : record.fqdn]
   provider                = aws.certificate_provider
+
+  timeouts {
+    create = "60m"
+  }
 }
 
 data "aws_s3_bucket" "website_bucket" {
